@@ -1,0 +1,77 @@
+{
+  "name": "fc27-poor-edition",
+  "productName": "FC 27 Poor Edition",
+  "version": "1.0.0",
+  "description": "FC 27 Poor Edition - piłka nożna 3D",
+  "author": "Tymek",
+  "private": true,
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "npm run dev -w client",
+    "start": "concurrently -k -n client,okno -c magenta,yellow \"npm run dev -w client\" \"wait-on -t 90000 http://localhost:5173 && electron electron/main.cjs --dev\"",
+    "build": "npm run build -w client",
+    "app": "npm run build && electron electron/main.cjs",
+    "dist": "npm run build && electron-builder --win nsis --x64",
+    "sim": "tsx tools/simtest.ts"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "electron": "^35.7.5",
+    "electron-builder": "^26.15.3",
+    "tsx": "^4.19.2",
+    "wait-on": "^8.0.3"
+  },
+  "workspaces": [
+    "client"
+  ],
+  "build": {
+    "appId": "pl.tymek.fc27pe",
+    "productName": "FC 27 Poor Edition",
+    "copyright": "Gra prywatna",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "electron/**",
+      "client/dist/**",
+      "!client/dist/models/footballer.glb",
+      "package.json",
+      "!node_modules/**"
+    ],
+    "npmRebuild": false,
+    "asar": true,
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "executableName": "FC27PoorEdition"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "shortcutName": "FC 27 Poor Edition",
+      "uninstallDisplayName": "FC 27 Poor Edition",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico",
+      "installerLanguages": [
+        "pl_PL"
+      ],
+      "language": "1045",
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false,
+      "artifactName": "FC27-Poor-Edition-Setup-${version}.${ext}"
+    }
+  }
+}

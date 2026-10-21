@@ -1,7 +1,7 @@
 {
   "name": "fc27-poor-edition",
   "productName": "FC 27 Poor Edition",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "FC 27 Poor Edition - piłka nożna 3D",
   "author": "Tymek",
   "private": true,
@@ -69,6 +69,7 @@
         "pl_PL"
       ],
       "language": "1045",
+      "include": "build/installer.nsh",
       "runAfterFinish": true,
       "deleteAppDataOnUninstall": false,
       "artifactName": "FC27-Poor-Edition-Setup-${version}.${ext}"

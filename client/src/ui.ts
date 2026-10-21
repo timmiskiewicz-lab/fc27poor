@@ -69,6 +69,7 @@ export function menuHtml(): string {
     <div class="brand"><span class="brand-top">FC 27</span><span class="brand-sub">Poor Edition</span></div>
     <nav class="main-nav">
       <button data-act="local" class="tile hero"><b>Szybki mecz</b><small>Z botem albo we dwóch na jednym ekranie</small></button>
+      <button data-act="free" class="tile"><b>Bez zasad</b><small>Bez fauli, kartek i spalonych</small></button>
       <button data-act="online" class="tile"><b>Online</b><small>Stwórz pokój albo wpisz kod kolegi</small></button>
       <button data-act="settings" class="tile"><b>Ustawienia</b><small>Czas, poziom, kamera, grafika</small></button>
       <button data-act="controls" class="tile"><b>Sterowanie</b><small>Klawiatura, mysz i pad</small></button>
@@ -119,7 +120,7 @@ function rulesToggle(rules: RulesMode, host: boolean): string {
   <p class="help">${rules === "free" ? "Bez fauli, kartek i spalonych. Auty, rożne i gole zostają." : "Pełne zasady: faule, kartki, spalone, karne."}</p>`;
 }
 
-export function sidesHtml(opts: { online: boolean; lobby: LobbyState | null; chips: Chip[]; note: string; canAdvance: boolean; host: boolean; you?: number }): string {
+export function sidesHtml(opts: { online: boolean; lobby: LobbyState | null; chips: Chip[]; note: string; canAdvance: boolean; host: boolean; you?: number; rules?: RulesMode }): string {
   const you = opts.you ?? 0;
   const leftChips = opts.online ? onlineChips(opts.lobby, "left", you) : opts.chips.filter((c) => c.side === "left").map(chipHtml).join("");
   const rightChips = opts.online ? onlineChips(opts.lobby, "right", you) : opts.chips.filter((c) => c.side === "right").map(chipHtml).join("");
@@ -137,7 +138,7 @@ export function sidesHtml(opts: { online: boolean; lobby: LobbyState | null; chi
           ? `<p class="kicker">Kod pokoju</p><div class="code">${esc(code)}</div>${rulesToggle(opts.lobby?.rules ?? "full", opts.host)}<p class="help">${
               waiting ? "Podaj ten kod kolegom (do 8 osób). Kolorowa kropka to kolor gracza." : "A / D albo lewy drążek wybiera stronę. Na jednej stronie może stanąć kilka osób."
             }</p>`
-          : `<p class="kicker">Urządzenia</p><p class="help">A / D przesuwa klawiaturę WASD, strzałki ← → przesuwają klawiaturę strzałek, drążek swój pad. W dół wraca na środek. Pusta strona to bot. Dwie osoby mogą grać na jednej klawiaturze.</p>`
+          : `<p class="kicker">Urządzenia</p><p class="help">A / D przesuwa klawiaturę WASD, strzałki ← → przesuwają klawiaturę strzałek, drążek swój pad. W dół wraca na środek. Pusta strona to bot. Dwie osoby mogą grać na jednej klawiaturze.</p>${rulesToggle(opts.rules ?? "full", true)}`
       }
       <div class="slot">${midChips}</div>
       ${opts.note ? `<p class="note">${esc(opts.note)}</p>` : ""}
@@ -199,7 +200,7 @@ export function clubsHtml(opts: {
         <span>${s.halfMinutes} min połowa</span><span>${esc(DIFFICULTY[s.difficulty])}</span>
       </div>
       ${opts.rules ? rulesToggle(opts.rules, opts.rulesHost !== false) : ""}
-      ${opts.canStart ? `<button data-act="start">Graj</button>` : `<p class="help">Czekam na hosta.</p>`}
+      ${opts.canStart ? `<button data-act="start">${opts.rules === "free" ? "Graj bez zasad" : "Graj"}</button>` : `<p class="help">Czekam na hosta.</p>`}
       <button data-act="settings" class="ghost">Ustawienia</button>
       <button data-act="back" class="ghost">Wróć</button>
     </div>

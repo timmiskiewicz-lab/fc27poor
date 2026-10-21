@@ -335,13 +335,10 @@ class App {
     this.resetNav();
     switch (action) {
       case "local":
-        this.online = false;
-        this.role = null;
-        this.lobby = null;
-        this.note = "";
-        this.sides.clear();
-        this.screen = "sides";
-        this.syncUi(true);
+        this.beginLocal("full");
+        return;
+      case "free":
+        this.beginLocal("free");
         return;
       case "online":
         this.note = "";
@@ -525,6 +522,17 @@ class App {
   private nick(): string {
     const input = document.querySelector<HTMLInputElement>("#nick");
     return (input?.value ?? "").replace(/\s+/g, " ").trim().slice(0, 16);
+  }
+
+  private beginLocal(rules: RulesMode): void {
+    this.online = false;
+    this.role = null;
+    this.lobby = null;
+    this.note = "";
+    this.sides.clear();
+    this.rulesMode = rules;
+    this.screen = "sides";
+    this.syncUi(true);
   }
 
   private setRules(rules: RulesMode): void {
@@ -1148,7 +1156,7 @@ class App {
       sides: [...this.sides.entries()],
       clubs: this.clubIndex,
       focus: this.focus,
-      s: [this.settings.halfMinutes, this.settings.difficulty],
+      s: [this.settings.halfMinutes, this.settings.difficulty, this.rulesMode],
     });
     if (!force && sig === this.uiSig) return;
     this.uiSig = sig;
@@ -1173,6 +1181,7 @@ class App {
       canAdvance: this.online ? onlineReady && this.role === "host" : assigned,
       host: this.role === "host",
       you: this.mySlot,
+      rules: this.rulesMode,
     });
   }
 

@@ -1800,7 +1800,7 @@ export class Match {
       b.vx = g.vx;
       b.vy = 0;
       b.vz = g.vz;
-      if (this.mode === "play" && g.holdT > 7.5) this.ai[g.team].releaseKeeper(g, true);
+      if (this.mode === "play" && g.gk && !this.isHuman(g) && g.holdT > 7.5) this.ai[g.team].releaseKeeper(g, true);
       return;
     }
     if (b.owner >= 0) {

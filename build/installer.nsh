@@ -1,17 +1,18 @@
 ; Zamyka grę i stary deinstalator, zanim instalator nadpisze pliki.
-; Domyślne sprawdzenie electron-buildera patrzy na ścieżkę procesu i nie widzi
-; FC27PoorEdition.exe, gdy Windows nie poda Path. Wtedy zapis Uninstall *.exe
-; kończy się oknem „Błąd otwarcia pliku do zapisu”.
+; Sprawdzenie electron-buildera patrzy na ścieżkę procesu. Gdy Windows jej nie poda,
+; gra zostaje otwarta i zapis exe kończy się oknem „Błąd otwarcia pliku do zapisu”.
 
 !macro customCheckAppRunning
   StrCpy $R7 0
   fc27_close_loop:
-    nsExec::Exec `"$CmdPath" /C taskkill /F /T /IM "FC27PoorEdition.exe"`
+    nsExec::Exec `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -Command "Get-Process -Name 'FC27PoorEdition','Uninstall FC27PoorEdition' -ErrorAction SilentlyContinue | Stop-Process -Force"`
     Pop $0
-    nsExec::Exec `"$CmdPath" /C taskkill /F /T /IM "Uninstall FC27PoorEdition.exe"`
+    nsExec::Exec `"$SYSDIR\taskkill.exe" /F /T /IM FC27PoorEdition.exe`
     Pop $0
-    Sleep 600
-    nsExec::Exec `"$CmdPath" /C tasklist /FI "IMAGENAME eq FC27PoorEdition.exe" /FO CSV /NH | "$SYSDIR\findstr.exe" /I /C:"FC27PoorEdition.exe"`
+    nsExec::Exec `"$SYSDIR\taskkill.exe" /F /T /IM $\"Uninstall FC27PoorEdition.exe$\"`
+    Pop $0
+    Sleep 700
+    nsExec::Exec `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -Command "if (Get-Process -Name 'FC27PoorEdition','Uninstall FC27PoorEdition' -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }"`
     Pop $0
     ${if} $0 == 0
       IntOp $R7 $R7 + 1
@@ -21,14 +22,6 @@
       ${endif}
       MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "Zamknij FC 27 Poor Edition i kliknij Ponów. Gra jest otwarta, więc instalator nie może zapisać plików." /SD IDCANCEL IDRETRY fc27_close_loop
       Quit
-    ${endif}
-
-    nsExec::Exec `"$CmdPath" /C tasklist /FI "IMAGENAME eq Uninstall FC27PoorEdition.exe" /FO CSV /NH | "$SYSDIR\findstr.exe" /I /C:"Uninstall FC27PoorEdition.exe"`
-    Pop $0
-    ${if} $0 == 0
-      Sleep 800
-      nsExec::Exec `"$CmdPath" /C taskkill /F /T /IM "Uninstall FC27PoorEdition.exe"`
-      Pop $0
     ${endif}
 
     ; Działający plik da się przenieść, ale nie nadpisać. Stary deinstalator schodzi z drogi.

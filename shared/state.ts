@@ -71,6 +71,22 @@ export interface InputFrame {
   switchP: boolean;
   jockey: boolean;
   skip: boolean;
+  /** Pick the ball up. Once every 40 s, for 5 s, and only while you have it. */
+  hands: boolean;
+}
+
+export interface SeatView {
+  slot: number;
+  team: 0 | 1;
+  player: number;
+  color: string;
+  name: string;
+  /** Seconds until the hands ability can be used again. 0 means ready. */
+  cd: number;
+  /** Seconds left of holding the ball. 0 means not holding. */
+  hold: number;
+  charge: number;
+  chargeKind: number;
 }
 
 export interface PlayerView {
@@ -131,6 +147,8 @@ export interface MatchView {
   goals: GoalInfo[];
   stats: MatchStats;
   aim: [number, number, number, number];
+  seats: SeatView[];
+  rules: boolean;
 }
 
 export type MatchEvent =

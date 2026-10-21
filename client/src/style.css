@@ -117,6 +117,8 @@ h1, h2, .eyebrow, .kicker, .code, .big-score { font-family: var(--display); lett
 .menu-card h1 { font-size: 76px; line-height: 0.88; }
 .menu-card h2 { font-size: 44px; line-height: 0.95; margin-bottom: 6px; }
 .menu-card form, .menu-card .stack { display: grid; gap: 10px; margin-top: 18px; }
+.update-bar { height: 8px; margin-top: 12px; border-radius: 99px; background: rgba(255, 255, 255, 0.12); overflow: hidden; }
+.update-bar em { display: block; height: 100%; width: 0; background: var(--accent); }
 .stack.row { display: flex; }
 .stack.row button { flex: 1; }
 label { display: grid; gap: 6px; color: var(--muted); font-size: 14px; }
@@ -253,6 +255,15 @@ input[type="range"] { padding: 0; accent-color: var(--accent); width: 100%; heig
 
 .hint { position: absolute; left: 18px; bottom: 16px; max-width: calc(50vw - 150px); color: rgba(255, 255, 255, 0.85); font-family: "Outfit Variable", Outfit, sans-serif; font-size: 13px; line-height: 1.5; white-space: pre-line; text-shadow: 0 2px 8px rgba(0, 0, 0, 0.8); transition: opacity 1.2s ease; }
 .hint.gone { opacity: 0; }
+.dot { display: inline-block; width: 11px; height: 11px; margin-right: 7px; border-radius: 50%; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45); vertical-align: -1px; }
+.modes { display: flex; gap: 8px; margin: 8px 0 4px; }
+.modes button { flex: 1; }
+.modes button.on { box-shadow: inset 0 0 0 2px var(--accent); }
+.hands { position: absolute; right: 18px; bottom: 16px; display: flex; flex-direction: column; gap: 6px; align-items: flex-end; }
+.hands i { width: 46px; height: 46px; border-radius: 8px; display: grid; place-items: center; font-style: normal; font-family: var(--display); font-size: 20px; font-weight: 800; color: #fff; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.85); background: rgba(255, 255, 255, 0.2); opacity: 0.55; border: 1px solid rgba(255, 255, 255, 0.35); }
+.hands i.hold { opacity: 0.92; }
+.rules-tag { position: absolute; left: 18px; top: 78px; padding: 4px 10px; border-radius: 6px; background: rgba(246, 201, 69, 0.85); color: #1a1404; font-family: var(--display); font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
+.rules-tag.hidden { display: none; }
 
 #overlay { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; }
 #overlay:not(:empty) { pointer-events: auto; background: rgba(2, 5, 10, 0.5); backdrop-filter: blur(3px); }

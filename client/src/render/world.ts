@@ -139,14 +139,14 @@ export class World {
     this.ball.castShadow = true;
     this.scene.add(this.ball);
 
-    for (const color of [0x3aa0ff, 0xff4a4a]) {
+    for (let n = 0; n < 8; n += 1) {
       const g = new THREE.Group();
-      const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.95, depthTest: false });
+      const mat = new THREE.MeshBasicMaterial({ color: 0x3aa0ff, transparent: true, opacity: 0.95, depthTest: false });
       const cone = new THREE.Mesh(new THREE.ConeGeometry(0.17, 0.32, 3), mat);
       cone.rotation.x = Math.PI;
       cone.position.y = 2.45;
       cone.renderOrder = 10;
-      const ring = new THREE.Mesh(new THREE.RingGeometry(0.55, 0.68, 40), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.55, depthWrite: false }));
+      const ring = new THREE.Mesh(new THREE.RingGeometry(0.55, 0.68, 40), new THREE.MeshBasicMaterial({ color: 0x3aa0ff, transparent: true, opacity: 0.55, depthWrite: false }));
       ring.rotation.x = -Math.PI / 2;
       ring.position.y = 0.02;
       g.add(cone, ring);
@@ -395,8 +395,8 @@ export class World {
       const p = view.players[i];
       if (!p) continue;
       const team = i < 11 ? 0 : 1;
-      const controlled = humans[team] && view.control[team] === i;
-      a.update(p, dt, { ball: view.ball, owner: owner === i && controlled, charge: controlled ? Math.max(0, view.charge[team]) : 0, celebrate: view.mode === "goal", isRef: false });
+      const seat = view.seats.find((s) => s.player === i);
+      a.update(p, dt, { ball: view.ball, owner: owner === i && Boolean(seat), charge: seat ? Math.max(0, seat.charge) : 0, celebrate: view.mode === "goal", isRef: false });
       if (p.act === ACT.slide || p.act === ACT.fallen || p.act === ACT.dive) a.kit.uDirt.value = Math.min(1, a.kit.uDirt.value + dt * 0.3);
     }
     this.refs.forEach((a, i) => {
@@ -407,17 +407,17 @@ export class World {
     });
     this.ball.position.set(view.ball[0], view.ball[1], view.ball[2]);
     this.spinBall(view, dt);
-    for (let t = 0; t < 2; t += 1) {
-      const m = this.markers[t];
-      const id = view.control[t];
-      const show = humans[t] && !this.replay && view.mode !== "goal" && view.mode !== "halftime" && view.mode !== "fulltime" && id >= 0 && view.players[id]?.on;
-      m.visible = Boolean(show);
-      if (show) {
-        const p = view.players[id];
-        m.position.set(p.x, Math.sin(this.time * 5) * 0.05, p.z);
-        m.children[0].rotation.y = this.time * 2;
-      }
-    }
+    const mark = !this.replay && view.mode !== "goal" && view.mode !== "halftime" && view.mode !== "fulltime";
+    this.markers.forEach((m) => (m.visible = false));
+    view.seats.forEach((s, n) => {
+      const m = this.markers[n];
+      const p = view.players[s.player];
+      if (!m || !mark || !p?.on) return;
+      m.visible = true;
+      m.position.set(p.x, Math.sin(this.time * 5 + n) * 0.05, p.z);
+      m.children[0].rotation.y = this.time * 2;
+      for (const child of m.children) ((child as THREE.Mesh).material as THREE.MeshBasicMaterial).color.set(s.color);
+    });
   }
 
   private spinBall(view: MatchView, dt: number): void {
@@ -528,21 +528,17 @@ export class World {
       let fx = b[0] + view.ballV[0] * 0.35;
       let fz = b[2] + view.ballV[2] * 0.2;
       let spread = 0;
-      const both = humans[0] && humans[1];
-      if (both) {
-        const p0 = view.players[view.control[0]];
-        const p1 = view.players[view.control[1]];
-        if (p0 && p1) {
-          const xs = [b[0], p0.x, p1.x];
-          const zs = [b[2], p0.z, p1.z];
-          const minX = Math.min(...xs);
-          const maxX = Math.max(...xs);
-          const minZ = Math.min(...zs);
-          const maxZ = Math.max(...zs);
-          fx = (minX + maxX) / 2 * 0.6 + fx * 0.4;
-          fz = (minZ + maxZ) / 2 * 0.6 + fz * 0.4;
-          spread = Math.max(maxX - minX, (maxZ - minZ) * 1.6);
-        }
+      const watched = view.seats.map((s) => view.players[s.player]).filter((p) => p && p.on);
+      if (watched.length >= 2) {
+        const xs = [b[0], ...watched.map((p) => p.x)];
+        const zs = [b[2], ...watched.map((p) => p.z)];
+        const minX = Math.min(...xs);
+        const maxX = Math.max(...xs);
+        const minZ = Math.min(...zs);
+        const maxZ = Math.max(...zs);
+        fx = ((minX + maxX) / 2) * 0.6 + fx * 0.4;
+        fz = ((minZ + maxZ) / 2) * 0.6 + fz * 0.4;
+        spread = Math.max(maxX - minX, (maxZ - minZ) * 1.6);
       }
       if (view.restart === "penalty" && view.mode === "setpiece") {
         fx = b[0] + Math.sign(b[0]) * 4;
@@ -553,8 +549,11 @@ export class World {
       this.focus.y += (fz - this.focus.y) * sk;
       const cfg = this.settings.camera === "wide" ? { d: 40, h: 34, f: 38 } : this.settings.camera === "pro" ? { d: 20, h: 12.5, f: 36 } : { d: 29, h: 21, f: 33 };
       const camX = clamp(this.focus.x * 0.9, -HALF_L + 4, HALF_L - 4);
-      pos.set(camX, cfg.h, HALF_W + cfg.d + this.focus.y * 0.22);
-      look.set(this.focus.x, 0, this.focus.y * 0.85 - 1.5);
+      // The near touchline is toward +Z, which is also where the camera and the front rows are.
+      // Pull the camera back over the pitch and raise it instead of pushing it into the crowd.
+      const near = clamp((this.focus.y - 6) / 26, 0, 1);
+      pos.set(camX, cfg.h + near * 10, HALF_W + cfg.d - near * 9 + Math.min(0, this.focus.y) * 0.1);
+      look.set(this.focus.x, 0.3, this.focus.y * (0.85 - near * 0.5) - 1.5);
       const far = clamp(-this.focus.y / HALF_W, -1, 1);
       fov = cfg.f - far * 3.5 + clamp((spread - 26) * 0.42, 0, 20);
       if (view.restart === "penalty" && view.mode === "setpiece") fov = cfg.f - 8;

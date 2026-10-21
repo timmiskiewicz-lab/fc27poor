@@ -1,4 +1,5 @@
 import { ROSTERS, shortName, type PlayerInfo } from "../../../../shared/rosters";
+import { PLAYER_COLORS } from "../../../../shared/protocol";
 import { ACT, CELEBRATION, SIGNATURE_CELEBRATION, emptyStats, type GoalInfo, type MatchEvent, type MatchMode, type MatchStats, type MatchView, type PlayerView, type RestartKind } from "../../../../shared/state";
 import { BALL_R, BOX_DEPTH, BOX_HALF_W, GOAL_H, GOAL_HALF_W, HALF_L, HALF_W, PEN_SPOT, Rng, clamp, lerp, round2, round3, smooth, turnToward, wrapAngle } from "../math";
 import { EMPTY_INPUT, type InputFrame, type MatchConfig } from "../types";
@@ -117,6 +118,21 @@ interface Charge {
   t: number;
 }
 
+interface HumanSeat {
+  slot: number;
+  team: 0 | 1;
+  player: number;
+  color: string;
+  name: string;
+  handsCd: number;
+  handsLeft: number;
+  prev: InputFrame;
+  charge: Charge;
+  switchT: number;
+  switchAge: number;
+  switchCycle: number[];
+}
+
 const H = 1 / 120;
 const GOAL_CELEBRATION = 7.5;
 export const JOG = 0.64;
@@ -124,13 +140,15 @@ const BRAKE = 9.5;
 const OUT_LINE = HALF_L + BALL_R;
 const SIDE_LINE = HALF_W + BALL_R;
 
-type ButtonKey = "pass" | "shoot" | "through" | "lob" | "slide" | "switchP" | "skip" | "jockey" | "sprint";
+type ButtonKey = "pass" | "shoot" | "through" | "lob" | "slide" | "switchP" | "skip" | "jockey" | "sprint" | "hands";
 
 export class Match {
   readonly players: Player[] = [];
   readonly ball: Ball;
   readonly refs: Official[] = [];
   readonly humans: [boolean, boolean];
+  readonly seats: HumanSeat[] = [];
+  readonly useRules: boolean;
   readonly config: MatchConfig;
   readonly rng: Rng;
   readonly ai: [TeamAI, TeamAI];
@@ -153,24 +171,23 @@ export class Match {
   replaySkip = false;
   private acc = 0;
   private events: MatchEvent[] = [];
-  private prevIn: [InputFrame, InputFrame] = [{ ...EMPTY_INPUT }, { ...EMPTY_INPUT }];
   private charge: [Charge, Charge] = [
     { kind: null, t: 0 },
     { kind: null, t: 0 },
   ];
-  private switchT: [number, number] = [0, 0];
-  private switchCycle: [number[], number[]] = [[], []];
-  private switchAge: [number, number] = [9, 9];
   private pendingCard: { id: number; red: boolean; shown: boolean } | null = null;
   private kickoffWhistled = false;
   private refFocus: { x: number; z: number } | null = null;
   private lastTouchTeam: 0 | 1 = 0;
   private flagSide = -1;
   private goalPending: { team: 0 | 1; own: boolean } | null = null;
+  /** Seconds after a penalty kick in which the keeper can still dive. */
+  private penWindow = 0;
 
   constructor(config: MatchConfig) {
     this.config = config;
-    this.humans = [config.humans[0], config.humans[1]];
+    this.humans = [false, false];
+    this.useRules = config.rules !== false;
     this.halfLen = Math.max(60, config.halfMinutes * 60);
     this.rng = new Rng(config.seed ?? (Date.now() & 0xffffff));
     const clubs = [config.leftClub, config.rightClub];
@@ -210,6 +227,7 @@ export class Match {
     };
     for (let i = 0; i < 3; i += 1) this.refs.push({ x: 0, z: i === 0 ? -8 : i === 1 ? HALF_W + 1.2 : -HALF_W - 1.2, vx: 0, vz: 0, yaw: 0, act: 0, st: 0, aa: 0 });
     this.ai = [new TeamAI(this, 0), new TeamAI(this, 1)];
+    this.buildSeats(config);
     this.firstKickoff = this.rng.chance(0.5) ? 0 : 1;
     this.setupKickoff(this.firstKickoff);
   }
@@ -334,7 +352,89 @@ export class Match {
   }
 
   isHuman(p: Player): boolean {
-    return this.humans[p.team] && this.control[p.team] === p.id;
+    return this.seats.some((s) => s.player === p.id);
+  }
+
+  /** Removes a disconnected person. Their footballer goes back to the AI. */
+  dropSeat(slot: number): void {
+    const index = this.seats.findIndex((s) => s.slot === slot);
+    if (index < 0) return;
+    this.seats.splice(index, 1);
+    this.humans[0] = this.seats.some((s) => s.team === 0);
+    this.humans[1] = this.seats.some((s) => s.team === 1);
+    this.syncControl();
+  }
+
+  private buildSeats(config: MatchConfig): void {
+    const list = config.seats?.length
+      ? config.seats
+      : ([0, 1] as const)
+          .filter((team) => config.humans[team])
+          .map((team) => ({ slot: team, team, name: team === 0 ? "Gracz 1" : "Gracz 2", color: PLAYER_COLORS[team] }));
+    const taken = [0, 0];
+    const order = [9, 10, 8, 7, 6, 5, 4, 1, 2, 3, 0];
+    for (const spec of list) {
+      const n = taken[spec.team];
+      taken[spec.team] += 1;
+      this.seats.push({
+        slot: spec.slot,
+        team: spec.team,
+        player: spec.team * 11 + order[Math.min(n, order.length - 1)],
+        color: spec.color,
+        name: spec.name,
+        handsCd: 0,
+        handsLeft: 0,
+        prev: { ...EMPTY_INPUT },
+        charge: { kind: null, t: 0 },
+        switchT: 0,
+        switchAge: 9,
+        switchCycle: [],
+      });
+    }
+    this.humans[0] = this.seats.some((s) => s.team === 0);
+    this.humans[1] = this.seats.some((s) => s.team === 1);
+    this.syncControl();
+  }
+
+  private syncControl(): void {
+    for (const team of [0, 1] as const) {
+      const first = this.seats.find((s) => s.team === team);
+      if (first) this.control[team] = first.player;
+    }
+  }
+
+  private seatsOn(team: 0 | 1): HumanSeat[] {
+    return this.seats.filter((s) => s.team === team);
+  }
+
+  /** Moves a person onto a footballer nobody else already controls. */
+  private setSeat(seat: HumanSeat, playerId: number): void {
+    if (this.seats.some((s) => s !== seat && s.player === playerId)) return;
+    seat.player = playerId;
+    this.syncControl();
+  }
+
+  /** Gives a restart to the only person on that side, or to the one standing closest. */
+  private claim(team: 0 | 1, playerId: number): void {
+    const mine = this.seatsOn(team);
+    if (!mine.length) return;
+    if (mine.length === 1) {
+      this.setSeat(mine[0], playerId);
+      return;
+    }
+    if (mine.some((s) => s.player === playerId)) return;
+    const spot = this.players[playerId];
+    let best = mine[0];
+    let bestD = Infinity;
+    for (const s of mine) {
+      const q = this.players[s.player];
+      const d = Math.hypot(q.x - spot.x, q.z - spot.z);
+      if (d < bestD) {
+        bestD = d;
+        best = s;
+      }
+    }
+    this.setSeat(best, playerId);
   }
 
   inBox(team: number, x: number, z: number): boolean {
@@ -386,7 +486,7 @@ export class Match {
 
   // ---------------------------------------------------------------- loop
 
-  step(dt: number, inputs: [InputFrame | null, InputFrame | null]): void {
+  step(dt: number, inputs: ReadonlyArray<InputFrame | null>): void {
     if (this.mode === "paused") return;
     this.acc += Math.min(dt, 0.06);
     while (this.acc >= H) {
@@ -409,15 +509,16 @@ export class Match {
     if (this.mode === "replay" || (this.mode === "goal" && this.modeT > 1.2)) this.replaySkip = true;
   }
 
-  private tick(h: number, inputs: [InputFrame | null, InputFrame | null]): void {
+  private tick(h: number, inputs: ReadonlyArray<InputFrame | null>): void {
     this.time += h;
     this.modeT += h;
+    if (this.penWindow > 0) this.penWindow = Math.max(0, this.penWindow - h);
     this.flow(h);
     if (this.mode === "replay") {
-      for (let t = 0; t < 2; t += 1) {
-        const input = inputs[t];
-        if (input && ((input.skip && !this.prevIn[t].skip) || (input.pass && !this.prevIn[t].pass) || (input.shoot && !this.prevIn[t].shoot))) this.replaySkip = true;
-        if (input) this.prevIn[t] = { ...input };
+      for (const seat of this.seats) {
+        const input = inputs[seat.slot];
+        if (input && ((input.skip && !seat.prev.skip) || (input.pass && !seat.prev.pass) || (input.shoot && !seat.prev.shoot))) this.replaySkip = true;
+        if (input) seat.prev = { ...input };
       }
       return;
     }
@@ -429,10 +530,11 @@ export class Match {
       p.face = false;
     }
     for (const t of [0, 1] as const) this.ai[t].update(h);
-    for (const t of [0, 1] as const) {
-      const input = inputs[t];
-      if (this.humans[t] && input) this.human(t, input, h);
-      else this.charge[t].kind = null;
+    for (const seat of this.seats) this.tickHands(seat, h);
+    for (const seat of this.seats) {
+      const input = inputs[seat.slot] ?? null;
+      if (input) this.human(seat, input, h);
+      else seat.charge.kind = null;
     }
     for (const p of this.players) this.updatePlayer(p, h);
     this.separate();
@@ -576,10 +678,7 @@ export class Match {
     this.ball.freeTaker = taker.id;
     this.lastTouchTeam = team;
     this.ball.lastTeam = team;
-    for (let t = 0; t < 2; t += 1) {
-      if (!this.humans[t]) continue;
-      this.control[t] = t === team ? taker.id : this.players[t * 11 + 9].on ? t * 11 + 9 : t * 11 + 6;
-    }
+    for (const t of [0, 1] as const) this.claim(t, t === team ? taker.id : this.players[t * 11 + 9].on ? t * 11 + 9 : t * 11 + 6);
     this.refs[0].x = -this.attack[team] * 6;
     this.refs[0].z = -10;
   }
@@ -664,10 +763,10 @@ export class Match {
       taker.yaw = Math.atan2(bz - taker.z, bx - taker.x);
       taker.state = "wait";
     }
-    for (let t = 0; t < 2; t += 1) {
-      if (!this.humans[t]) continue;
-      if (t === r.team) this.control[t] = taker.id;
-      else this.control[t] = this.bestDefenderFor(t as 0 | 1, bx, bz);
+    for (const t of [0, 1] as const) {
+      if (t === r.team) this.claim(t, taker.id);
+      else if (r.kind === "penalty") this.claim(t, this.keeper(t).id);
+      else this.claim(t, this.bestDefenderFor(t, bx, bz));
     }
     const names: Record<RestartKind, string> = {
       kickoff: "Środek",
@@ -697,26 +796,53 @@ export class Match {
 
   // ---------------------------------------------------------------- humans
 
-  private human(team: 0 | 1, inp: InputFrame, h: number): void {
-    const prev = this.prevIn[team];
+  private tickHands(seat: HumanSeat, h: number): void {
+    seat.handsCd = Math.max(0, seat.handsCd - h);
+    if (seat.handsLeft <= 0) return;
+    seat.handsLeft = Math.max(0, seat.handsLeft - h);
+    const still = this.ball.owner === seat.player && this.ball.held;
+    if (!still || seat.handsLeft <= 0) {
+      if (this.ball.owner === seat.player && this.ball.held) this.ball.held = false;
+      seat.handsLeft = 0;
+      return;
+    }
+    const p = this.players[seat.player];
+    if (p.state === "run") p.state = "hold";
+  }
+
+  private human(seat: HumanSeat, inp: InputFrame, h: number): void {
+    const team = seat.team;
+    const prev = seat.prev;
     const edge = (k: ButtonKey) => inp[k] && !prev[k];
-    this.prevIn[team] = { ...inp };
-    this.switchAge[team] += h;
-    if (this.switchT[team] > 0) this.switchT[team] -= h;
+    seat.prev = { ...inp };
+    seat.switchAge += h;
+    if (seat.switchT > 0) seat.switchT -= h;
     if (this.mode === "goal" && this.modeT > 1.2 && (edge("skip") || edge("pass") || edge("shoot"))) this.replaySkip = true;
     if (this.mode === "halftime" || this.mode === "fulltime" || this.mode === "goal") return;
-    let p = this.players[this.control[team]];
+    let p = this.players[seat.player];
     if (!p.on) {
-      this.control[team] = this.bestDefenderFor(team, this.ball.x, this.ball.z);
-      p = this.players[this.control[team]];
+      this.setSeat(seat, this.bestDefenderFor(team, this.ball.x, this.ball.z));
+      p = this.players[seat.player];
     }
     const settingTaker = (this.mode === "setpiece" || this.mode === "kickoff") && this.restart?.taker === p.id;
-    if (edge("switchP") && !settingTaker && !(this.ball.owner === p.id)) {
-      this.manualSwitch(team);
-      p = this.players[this.control[team]];
+    if (edge("switchP") && !settingTaker && !(this.ball.owner === p.id) && !this.keepingPenalty(p)) {
+      this.manualSwitch(seat);
+      p = this.players[seat.player];
     }
-    this.autoSwitch(team, inp);
-    p = this.players[this.control[team]];
+    this.autoSwitch(seat, inp);
+    p = this.players[seat.player];
+    if (this.keepingPenalty(p)) {
+      this.keepPenalty(seat, p, inp, edge, h);
+      return;
+    }
+    if (edge("hands") && this.mode === "play" && !p.gk && this.ball.owner === p.id && !this.ball.held && seat.handsCd <= 0 && seat.handsLeft <= 0) {
+      this.ball.held = true;
+      this.ball.vx = this.ball.vy = this.ball.vz = 0;
+      p.state = "hold";
+      p.st = 0;
+      seat.handsLeft = 5;
+      seat.handsCd = 40;
+    }
     const ax = Math.hypot(inp.ax, inp.az) > 0.15 ? inp.ax : Math.hypot(inp.mx, inp.mz) > 0.2 ? inp.mx : Math.cos(p.yaw);
     const az = Math.hypot(inp.ax, inp.az) > 0.15 ? inp.az : Math.hypot(inp.mx, inp.mz) > 0.2 ? inp.mz : Math.sin(p.yaw);
     const al = Math.hypot(ax, az) || 1;
@@ -736,11 +862,11 @@ export class Match {
     const own = this.owner();
     const oppBall = (own && own.team !== team) || (this.ball.held && this.ball.owner >= 0 && this.teamOf(this.ball.owner) !== team);
     if (this.mode === "stoppage") {
-      this.charge[team].kind = null;
+      seat.charge.kind = null;
       return;
     }
     if (oppBall && !settingTaker) {
-      this.charge[team].kind = null;
+      seat.charge.kind = null;
       if (edge("slide") && this.canAct(p) && !p.gk) this.startSlide(p, inp.mx, inp.mz);
       if (edge("shoot") && this.canAct(p)) this.standTackle(p);
       if (inp.pass && own && this.canAct(p)) {
@@ -769,11 +895,11 @@ export class Match {
     if (edge("slide") && !inp.lob && this.canAct(p) && !p.gk && this.ball.owner !== p.id && !settingTaker) {
       this.startSlide(p, inp.mx, inp.mz);
       if (p.state === "slide") {
-        this.charge[team].kind = null;
+        seat.charge.kind = null;
         return;
       }
     }
-    const c = this.charge[team];
+    const c = seat.charge;
     const keys: Array<"shoot" | "pass" | "through" | "lob"> = ["shoot", "pass", "through", "lob"];
     if (!c.kind) {
       for (const k of keys) {
@@ -798,14 +924,43 @@ export class Match {
   }
 
   chargeOf(team: number): number {
-    const c = this.charge[team];
+    const c = this.seats.find((s) => s.team === team)?.charge ?? this.charge[team];
     if (!c.kind) return -1;
     return clamp(c.t / (c.kind === "shoot" ? 1.15 : 1.0), 0, 1);
   }
 
   chargeKind(team: number): number {
-    const c = this.charge[team];
+    const c = this.seats.find((s) => s.team === team)?.charge ?? this.charge[team];
     return c.kind === "shoot" ? 1 : c.kind === "pass" ? 2 : c.kind === "through" ? 3 : c.kind === "lob" ? 4 : 0;
+  }
+
+  private keepingPenalty(p: Player): boolean {
+    const r = this.restart;
+    const setup = this.mode === "setpiece" && r !== null && r.kind === "penalty" && p.gk && p.team !== r.team;
+    return setup || (this.penWindow > 0 && p.gk && this.ball.penalty && this.isHuman(p));
+  }
+
+  /** The defending person shuffles along the goal line and dives on a kick button. */
+  private keepPenalty(seat: HumanSeat, p: Player, inp: InputFrame, edge: (k: ButtonKey) => boolean, h: number): void {
+    seat.charge.kind = null;
+    const line = this.ownGoalX(p.team) - Math.sign(this.ownGoalX(p.team) || 1) * 0.55;
+    p.x += (line - p.x) * Math.min(1, h * 8);
+    p.wx = 0;
+    p.wz = inp.mz;
+    p.sprint = false;
+    p.z = clamp(p.z + inp.mz * h * 6.5, -(GOAL_HALF_W - 0.35), GOAL_HALF_W - 0.35);
+    p.yaw = Math.atan2(-p.z * 0.15, this.attack[p.team]);
+    if (p.state === "dive" || !(edge("slide") || edge("shoot") || edge("pass"))) return;
+    const dir = Math.abs(inp.mz) > 0.25 ? Math.sign(inp.mz) : Math.abs(inp.az) > 0.25 ? Math.sign(inp.az) : 0;
+    p.state = "dive";
+    p.st = 0;
+    p.dur = 1.35;
+    p.dirX = Math.sign(this.ownGoalX(p.team) - p.x) * 0.05;
+    p.dirZ = dir;
+    p.speed0 = dir === 0 ? 1.4 : 7.2;
+    p.aa = 1.15;
+    p.willSave = true;
+    p.planShot = this.ball.shot;
   }
 
   private humanFire(p: Player, kind: KickKind, power: number, ax: number, az: number): void {
@@ -832,13 +987,14 @@ export class Match {
     return this.modeT > (k === "penalty" ? 1.5 : k === "freekick" ? 1.25 : 0.7);
   }
 
-  private manualSwitch(team: 0 | 1): void {
+  private manualSwitch(seat: HumanSeat): void {
+    const team = seat.team;
     const b = this.ball;
     const fx = b.x + b.vx * 0.35;
     const fz = b.z + b.vz * 0.35;
     const ownGoal = this.ownGoalX(team);
     const list = this.players
-      .filter((p) => p.team === team && p.on && !p.gk && p.state !== "off")
+      .filter((p) => p.team === team && p.on && !p.gk && p.state !== "off" && !this.seats.some((s) => s !== seat && s.player === p.id))
       .map((p) => {
         const d = Math.hypot(p.x - fx, p.z - fz);
         const goalSide = Math.abs(p.x - ownGoal) < Math.abs(fx - ownGoal) ? -2.5 : 0;
@@ -847,35 +1003,37 @@ export class Match {
       .sort((a, b2) => a.score - b2.score)
       .map((e) => e.id);
     let pick: number | undefined;
-    if (this.switchAge[team] < 1.1 && this.switchCycle[team].length) {
-      const cycle = this.switchCycle[team];
-      const index = cycle.indexOf(this.control[team]);
+    if (seat.switchAge < 1.1 && seat.switchCycle.length) {
+      const cycle = seat.switchCycle;
+      const index = cycle.indexOf(seat.player);
       pick = cycle[(index + 1) % Math.min(cycle.length, 4)];
     } else {
-      this.switchCycle[team] = list;
-      pick = list.find((id) => id !== this.control[team]);
+      seat.switchCycle = list;
+      pick = list.find((id) => id !== seat.player);
     }
     if (pick !== undefined) {
-      this.control[team] = pick;
-      this.switchT[team] = 1.4;
-      this.switchAge[team] = 0;
+      this.setSeat(seat, pick);
+      seat.switchT = 1.4;
+      seat.switchAge = 0;
     }
   }
 
-  private autoSwitch(team: 0 | 1, inp: InputFrame): void {
+  private autoSwitch(seat: HumanSeat, inp: InputFrame): void {
+    const team = seat.team;
+    if (this.seatsOn(team).length > 1) return;
     const o = this.owner();
-    if (o && o.team === team && this.control[team] !== o.id) {
+    if (o && o.team === team && seat.player !== o.id) {
       if (!o.gk || this.ball.held) {
-        this.control[team] = o.id;
+        this.setSeat(seat, o.id);
         return;
       }
     }
-    const current = this.players[this.control[team]];
-    if (current.gk && !(this.ball.owner === current.id)) {
-      this.control[team] = this.bestDefenderFor(team, this.ball.x, this.ball.z);
+    const current = this.players[seat.player];
+    if (current.gk && !(this.ball.owner === current.id) && !this.keepingPenalty(current)) {
+      this.setSeat(seat, this.bestDefenderFor(team, this.ball.x, this.ball.z));
       return;
     }
-    if (this.switchT[team] > 0 || (o && o.team === team)) return;
+    if (seat.switchT > 0 || (o && o.team === team)) return;
     if (this.mode !== "play") return;
     if (this.ball.target >= 0 && this.teamOf(this.ball.target) === team) return;
     const b = this.ball;
@@ -894,8 +1052,8 @@ export class Match {
       }
     }
     if (best !== current.id && bestD + 7 < mine) {
-      this.control[team] = best;
-      this.switchT[team] = 1.0;
+      this.setSeat(seat, best);
+      seat.switchT = 1.0;
     }
   }
 
@@ -1134,13 +1292,20 @@ export class Match {
     this.debug?.("kick", { kind, id: p.id, team: p.team, recv: plan.receiver, d: Math.hypot(plan.tx - b.x, plan.tz - b.z), v: Math.hypot(b.vx, b.vy, b.vz), ai: plan.ai });
     this.emit({ k: "kick", power: clamp(Math.hypot(b.vx, b.vy, b.vz) / 32, 0.1, 1) });
     if (this.mode === "setpiece" || this.mode === "kickoff") {
+      if (restartKind === "penalty") {
+        this.penWindow = 0.55;
+        const gk = this.keeper(1 - p.team);
+        if (gk.state === "dive" && gk.willSave) gk.planShot = b.shot;
+      }
       this.mode = "play";
       this.modeT = 0;
       this.restart = null;
     }
-    if (this.humans[p.team] && this.control[p.team] === p.id && plan.receiver >= 0 && kind !== "shot") {
-      this.control[p.team] = plan.receiver;
-      this.switchT[p.team] = 0.6;
+    const kicker = this.seats.find((s) => s.player === p.id);
+    if (kicker) kicker.handsLeft = 0;
+    if (kicker && this.seatsOn(p.team).length === 1 && plan.receiver >= 0 && kind !== "shot") {
+      this.setSeat(kicker, plan.receiver);
+      kicker.switchT = 0.6;
     }
   }
 
@@ -1313,7 +1478,7 @@ export class Match {
   }
 
   foul(off: Player, victim: Player, kind: "slide" | "stand"): void {
-    if (this.mode !== "play") return;
+    if (this.mode !== "play" || !this.useRules) return;
     const b = this.ball;
     const hadBall = b.owner === victim.id || Math.hypot(b.x - victim.x, b.z - victim.z) < 2.5;
     const behind = this.fromBehind(off, victim);
@@ -1377,7 +1542,8 @@ export class Match {
     ref.act = ACT.card;
     ref.st = 0;
     ref.aa = c.red ? 2 : 1;
-    if (this.humans[p.team] && this.control[p.team] === p.id) this.control[p.team] = this.bestDefenderFor(p.team, this.ball.x, this.ball.z);
+    const sent = this.seats.find((s) => s.player === p.id);
+    if (sent) this.setSeat(sent, this.bestDefenderFor(p.team, this.ball.x, this.ball.z));
   }
 
   // ---------------------------------------------------------------- players
@@ -2002,6 +2168,10 @@ export class Match {
   }
 
   private callOffside(p: Player): void {
+    if (!this.useRules) {
+      this.ball.offside = null;
+      return;
+    }
     this.stats.offsides[p.team] += 1;
     this.flagSide = p.x > 0 ? 1 : 2;
     const lin = this.refs[this.flagSide];
@@ -2018,6 +2188,7 @@ export class Match {
   private keeperReact(p: Player, h: number): void {
     const b = this.ball;
     if (this.mode !== "play" || p.state === "dive" || p.saveLock > 0) return;
+    if (b.penalty && this.isHuman(p)) return;
     if (b.owner >= 0 || b.held || !b.shot || b.shot.team === p.team || b.shot.resolved) {
       p.react = 0;
       return;
@@ -2078,7 +2249,7 @@ export class Match {
 
   diveContact(p: Player): void {
     const b = this.ball;
-    if (p.state !== "dive" || p.st > 0.75 || b.owner >= 0 || b.held) return;
+    if (p.state !== "dive" || p.st > (this.isHuman(p) ? 1.05 : 0.75) || b.owner >= 0 || b.held) return;
     if (!this.inBox(p.team, b.x, b.z)) return;
     const reach = 1.05 + (p.info.stats.gk - 80) * 0.006;
     const hx = p.x + p.dirX * reach;
@@ -2097,11 +2268,12 @@ export class Match {
     const cz = az + sz * t;
     const d = Math.hypot(b.x - cx, b.y - cy, b.z - cz);
     const shotLive = b.shot && b.shot.team !== p.team && !b.shot.resolved;
-    if (d > (shotLive && p.willSave ? 0.62 : 0.4)) return;
+    const humanSave = this.isHuman(p) && p.willSave;
+    if (d > (shotLive && (p.willSave || humanSave) ? (humanSave ? 0.9 : 0.62) : 0.4)) return;
     const rel = Math.hypot(b.vx - p.vx, b.vy, b.vz - p.vz);
     if (shotLive && b.shot) {
       b.shot.resolved = true;
-      if (!(p.planShot === b.shot && p.willSave)) {
+      if (!(p.willSave && (p.planShot === b.shot || humanSave))) {
         if (this.rng.chance(0.3)) {
           b.vx *= 0.9;
           b.vz += this.rng.gauss() * 1.2;
@@ -2382,6 +2554,18 @@ export class Match {
       goals: this.goals.slice(),
       stats: this.stats,
       aim: [0, 0, 0, 0],
+      rules: this.useRules,
+      seats: this.seats.map((s) => ({
+        slot: s.slot,
+        team: s.team,
+        player: s.player,
+        color: s.color,
+        name: s.name,
+        cd: round2(s.handsCd),
+        hold: round2(s.handsLeft),
+        charge: round2(s.charge.kind ? clamp(s.charge.t / (s.charge.kind === "shoot" ? 1.15 : 1), 0, 1) : -1),
+        chargeKind: s.charge.kind === "shoot" ? 1 : s.charge.kind === "pass" ? 2 : s.charge.kind === "through" ? 3 : s.charge.kind === "lob" ? 4 : 0,
+      })),
     };
   }
 }

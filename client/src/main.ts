@@ -7,7 +7,7 @@ import "@fontsource/barlow-condensed/800-italic.css";
 import "@fontsource-variable/outfit";
 import * as THREE from "three";
 import { CLUBS, clubById, type Club, type ClubId } from "../../shared/clubs";
-import type { InputMsg, LobbyState, ServerMsg, SideName } from "../../shared/protocol";
+import { PLAYER_COLORS, type InputMsg, type LobbyState, type RulesMode, type ServerMsg, type SideName } from "../../shared/protocol";
 import { ROSTERS, shortName } from "../../shared/rosters";
 import type { MatchEvent, MatchView } from "../../shared/state";
 import * as audio from "./audio";
@@ -34,7 +34,7 @@ import {
 } from "./game/input";
 import { HALF_L } from "./game/math";
 import { Match } from "./game/sim/Match";
-import { EMPTY_INPUT, type InputFrame } from "./game/types";
+import { EMPTY_INPUT, type InputFrame, type SeatSetup } from "./game/types";
 import { GuestView } from "./net/GuestView";
 import { P2PNet, netErrorText } from "./net/p2p";
 import { World } from "./render/world";
@@ -43,6 +43,7 @@ import {
   Hud,
   clubsHtml,
   controlsHtml,
+  updateHtml,
   gateHtml,
   hudHtml,
   menuHtml,
@@ -56,10 +57,26 @@ import {
 
 type Screen = "loading" | "menu" | "gate" | "sides" | "clubs" | "match";
 type Overlay = "none" | "pause" | "half" | "full";
-type Modal = "none" | "settings" | "controls";
-type ButtonKey = "pass" | "shoot" | "through" | "lob" | "slide" | "switchP" | "skip";
+type Modal = "none" | "settings" | "controls" | "update";
+type ButtonKey = "pass" | "shoot" | "through" | "lob" | "slide" | "switchP" | "skip" | "hands";
 
-const BUTTONS: ButtonKey[] = ["pass", "shoot", "through", "lob", "slide", "switchP", "skip"];
+const BUTTONS: ButtonKey[] = ["pass", "shoot", "through", "lob", "slide", "switchP", "skip", "hands"];
+const UPDATE_SKIP = "fc27pe-update-skip";
+
+interface UpdateOffer {
+  current: string;
+  version: string;
+  notes: string;
+  page: string;
+}
+
+interface Fc27Bridge {
+  ready: () => Promise<UpdateOffer | null>;
+  onUpdate: (callback: (info: UpdateOffer) => void) => void;
+  onProgress: (callback: (progress: { received: number; total: number }) => void) => void;
+  installUpdate: () => Promise<{ ok: boolean; error?: string }>;
+  openUpdate: (page: string) => Promise<void>;
+}
 const MARK_P1 = "#36a3ff";
 const MARK_P2 = "#ff4d5e";
 
@@ -73,6 +90,9 @@ class App {
   private settings: Settings = loadSettings();
   private screen: Screen = "loading";
   private modal: Modal = "none";
+  private updateOffer: UpdateOffer | null = null;
+  private updateBusy = "";
+  private updateError = "";
   private overlay: Overlay = "none";
   private net: P2PNet | null = null;
   private connecting: P2PNet | null = null;
@@ -90,9 +110,11 @@ class App {
   private humans: [boolean, boolean] = [false, false];
   private devices: [string | null, string | null] = [null, null];
   private yourSide: SideName = "left";
-  private remoteLatest: InputFrame = { ...EMPTY_INPUT };
-  private remoteLatch = new Set<ButtonKey>();
-  private remoteSeq = 0;
+  private mySlot = 0;
+  private rulesMode: RulesMode = "full";
+  private remoteLatest: InputFrame[] = Array.from({ length: 8 }, () => ({ ...EMPTY_INPUT }));
+  private remoteLatch: Array<Set<ButtonKey>> = Array.from({ length: 8 }, () => new Set());
+  private remoteSeq: number[] = Array.from({ length: 8 }, () => 0);
   private seq = 1;
   private sendAcc = 0;
   private snapAcc = 0;
@@ -155,7 +177,60 @@ class App {
         ui.innerHTML = `<div class="loading"><p>Nie udało się wczytać modelu zawodnika (models/player.glb).</p></div>`;
       });
     requestAnimationFrame((now) => this.frame(now));
-    if (import.meta.env.DEV) (window as unknown as { __game: unknown }).__game = { app: this, world: this.world };
+    this.listenForUpdate();
+    if (import.meta.env.DEV) (window as unknown as { __game: unknown }).__game = { app: this, world: this.world, showUpdate: (info: UpdateOffer) => this.presentUpdate(info) };
+  }
+
+  private bridge(): Fc27Bridge | null {
+    return (window as Window & { fc27?: Fc27Bridge }).fc27 ?? null;
+  }
+
+  private listenForUpdate(): void {
+    const bridge = this.bridge();
+    if (!bridge) return;
+    const take = (info: UpdateOffer | null) => {
+      if (!info || localStorage.getItem(UPDATE_SKIP) === info.version) return;
+      this.updateOffer = info;
+      this.maybeShowUpdate();
+    };
+    bridge.onUpdate(take);
+    void bridge.ready().then(take).catch(() => undefined);
+    bridge.onProgress((progress) => {
+      if (this.modal !== "update") return;
+      const pct = progress.total > 0 ? Math.min(100, Math.round((progress.received / progress.total) * 100)) : 0;
+      const label = document.getElementById("update-status");
+      if (label) {
+        label.hidden = false;
+        label.textContent = pct > 0 ? `Pobieram… ${pct}%` : "Pobieram…";
+      }
+      const fill = document.getElementById("update-bar-fill");
+      if (fill) fill.style.width = `${pct}%`;
+    });
+  }
+
+  private presentUpdate(info: UpdateOffer): void {
+    this.updateOffer = info;
+    this.updateBusy = "";
+    this.updateError = "";
+    this.modal = "update";
+    this.paintModal();
+  }
+
+  private maybeShowUpdate(): void {
+    if (!this.updateOffer || this.modal === "update") return;
+    if (this.modal !== "none" || this.screen === "loading" || this.screen === "match") return;
+    this.presentUpdate(this.updateOffer);
+  }
+
+  private dismissUpdate(): void {
+    if (this.updateOffer) localStorage.setItem(UPDATE_SKIP, this.updateOffer.version);
+    this.updateOffer = null;
+    this.updateBusy = "";
+    this.updateError = "";
+    this.modal = "none";
+    this.resetNav();
+    this.paintModal();
+    swallowEdges();
   }
 
   private applyWorldSettings(): void {
@@ -294,6 +369,9 @@ class App {
       case "host":
         void this.hostRoom();
         return;
+      case "rules":
+        if (arg === "full" || arg === "free") this.setRules(arg);
+        return;
       case "assign": {
         const side = arg === "left" || arg === "right" ? arg : null;
         if (!side) return;
@@ -325,7 +403,37 @@ class App {
       case "quit":
         this.quitMatch();
         return;
+      case "update-yes":
+        void this.installUpdate();
+        return;
+      case "update-open":
+        if (this.updateOffer) void this.bridge()?.openUpdate(this.updateOffer.page);
+        return;
+      case "update-no":
+        this.dismissUpdate();
+        return;
     }
+  }
+
+  private async installUpdate(): Promise<void> {
+    const bridge = this.bridge();
+    if (!bridge || !this.updateOffer) {
+      this.updateError = "Aktualizacja działa w zainstalowanej grze.";
+      this.paintModal();
+      return;
+    }
+    this.updateBusy = "Pobieram…";
+    this.updateError = "";
+    this.paintModal();
+    const result = await bridge.installUpdate();
+    if (result.ok) {
+      this.updateBusy = "Instalator się uruchamia. Gra się zamknie.";
+      this.paintModal();
+      return;
+    }
+    this.updateBusy = "";
+    this.updateError = result.error || "Nie udało się pobrać aktualizacji.";
+    this.paintModal();
   }
 
   private changeSetting(arg: string): void {
@@ -350,14 +458,22 @@ class App {
       return;
     }
     modalEl.classList.add("on");
-    modalEl.innerHTML = this.modal === "settings" ? settingsHtml(this.settings, this.screen === "match") : controlsHtml();
+    if (this.modal === "update" && this.updateOffer) modalEl.innerHTML = updateHtml(this.updateOffer.current, this.updateOffer.version, this.updateOffer.notes, this.updateBusy, this.updateError);
+    else if (this.modal === "settings") modalEl.innerHTML = settingsHtml(this.settings, this.screen === "match");
+    else modalEl.innerHTML = controlsHtml();
   }
 
   private closeModal(): void {
+    if (this.modal === "update") {
+      if (this.updateBusy) return;
+      this.dismissUpdate();
+      return;
+    }
     this.modal = "none";
     this.resetNav();
     this.paintModal();
     swallowEdges();
+    this.maybeShowUpdate();
   }
 
   // ---------------------------------------------------------------- online
@@ -406,17 +522,43 @@ class App {
     }
   }
 
+  private nick(): string {
+    const input = document.querySelector<HTMLInputElement>("#nick");
+    return (input?.value ?? "").replace(/\s+/g, " ").trim().slice(0, 16);
+  }
+
+  private setRules(rules: RulesMode): void {
+    if (this.online) {
+      if (this.role !== "host") return;
+      this.net?.send({ t: "rules", rules });
+      return;
+    }
+    this.rulesMode = rules;
+    this.syncUi(true);
+  }
+
   private hostRoom(): Promise<void> {
-    return this.withNet("host", "Tworzę pokój…", (net) => net.host());
+    const name = this.nick();
+    if (name.length < 2) {
+      toast("Wpisz nazwę (co najmniej 2 znaki).");
+      return Promise.resolve();
+    }
+    this.mySlot = 0;
+    return this.withNet("host", "Tworzę pokój…", (net) => net.host(name));
   }
 
   private joinRoom(raw: string): Promise<void> {
     const code = raw.replace(/\D/g, "");
+    const name = this.nick();
+    if (name.length < 2) {
+      toast("Wpisz nazwę (co najmniej 2 znaki).");
+      return Promise.resolve();
+    }
     if (code.length !== 6) {
       toast("Kod pokoju ma 6 cyfr.");
       return Promise.resolve();
     }
-    return this.withNet("guest", `Łączę z pokojem ${code}…`, (net) => net.join(code));
+    return this.withNet("guest", `Łączę z pokojem ${code}…`, (net) => net.join(code, name));
   }
 
   private leaveRoom(): void {
@@ -429,10 +571,15 @@ class App {
       case "err":
         toast(msg.message);
         return;
+      case "you":
+        this.mySlot = msg.slot;
+        return;
       case "lobby": {
         this.lobby = msg.lobby;
         this.online = true;
-        const me = this.role === "host" ? msg.lobby.host : msg.lobby.guest;
+        this.rulesMode = msg.lobby.rules;
+        const me = this.role === "host" ? msg.lobby.players.find((p) => p.slot === 0) : msg.lobby.players.find((p) => p.slot === this.mySlot);
+        if (me) this.mySlot = me.slot;
         if (me?.side) this.yourSide = me.side;
         if (msg.lobby.phase === "sides" && this.screen !== "match") this.screen = "sides";
         if (msg.lobby.phase === "clubs" && this.screen !== "match") this.screen = "clubs";
@@ -441,13 +588,15 @@ class App {
       }
       case "begin":
         this.yourSide = msg.you;
+        this.mySlot = msg.slot;
         this.role = msg.role;
         this.online = true;
+        this.rulesMode = msg.rules;
         this.humans = [true, true];
         this.beginMatch(msg.leftClub, msg.rightClub, msg.halfMinutes, msg.difficulty);
         return;
       case "peerInput":
-        this.takeRemote(msg.input);
+        this.takeRemote(msg.slot, msg.input);
         return;
       case "snap":
         if (!this.guest || this.screen !== "match") return;
@@ -458,12 +607,11 @@ class App {
         toast(msg.paused ? "Host zatrzymał mecz." : "Host wznowił mecz.");
         return;
       case "peerLeft":
-        if (this.role === "host" && this.match && this.screen === "match") {
-          const team = this.yourSide === "left" ? 1 : 0;
-          this.match.humans[team] = false;
-          this.humans[team] = false;
-          this.remoteLatest = { ...EMPTY_INPUT };
-          toast("Gość wyszedł. Jego drużyna gra teraz jako bot.");
+        if (this.role === "host" && this.match && this.screen === "match" && msg.slot !== undefined) {
+          const gone = this.lobby?.players.find((p) => p.slot === msg.slot);
+          this.match.dropSeat(msg.slot);
+          if (this.lobby) this.lobby.players = this.lobby.players.filter((p) => p.slot !== msg.slot);
+          toast(`${gone?.name ?? "Gracz"} wyszedł. Jego zawodnik gra teraz jako bot.`);
           return;
         }
         if (this.lobby || this.screen === "match") toast(this.role === "guest" ? "Host zamknął pokój." : "Gość wyszedł.");
@@ -474,18 +622,19 @@ class App {
     }
   }
 
-  private takeRemote(msg: InputMsg): void {
-    if (typeof msg.seq !== "number" || msg.seq <= this.remoteSeq) return;
-    this.remoteSeq = msg.seq;
+  private takeRemote(slot: number, msg: InputMsg): void {
+    if (slot < 0 || slot > 7) return;
+    if (typeof msg.seq !== "number" || msg.seq <= this.remoteSeq[slot]) return;
+    this.remoteSeq[slot] = msg.seq;
     const f = sanitizeInput(msg.f);
-    for (const k of BUTTONS) if (f[k]) this.remoteLatch.add(k);
-    this.remoteLatest = f;
+    for (const k of BUTTONS) if (f[k]) this.remoteLatch[slot].add(k);
+    this.remoteLatest[slot] = f;
   }
 
-  private remoteFrame(): InputFrame {
-    const f = { ...this.remoteLatest };
-    for (const k of this.remoteLatch) f[k] = true;
-    this.remoteLatch.clear();
+  private remoteFrame(slot: number): InputFrame {
+    const f = { ...this.remoteLatest[slot] };
+    for (const k of this.remoteLatch[slot]) f[k] = true;
+    this.remoteLatch[slot].clear();
     return f;
   }
 
@@ -757,9 +906,9 @@ class App {
     this.snapAcc = 0;
     this.sendAcc = 0;
     this.outbox = [];
-    this.remoteLatest = { ...EMPTY_INPUT };
-    this.remoteLatch.clear();
-    this.remoteSeq = 0;
+    this.remoteLatest = Array.from({ length: 8 }, () => ({ ...EMPTY_INPUT }));
+    this.remoteLatch = Array.from({ length: 8 }, () => new Set());
+    this.remoteSeq = Array.from({ length: 8 }, () => 0);
     this.lastView = null;
     this.world.setClubs(left, right, true);
     const blueTeam = this.online ? this.myTeam() : this.humans[0] ? 0 : 1;
@@ -769,12 +918,16 @@ class App {
       this.guest = new GuestView();
     } else {
       this.guest = null;
+      const seats = this.online ? this.onlineSeats() : this.localSeats();
+      this.humans = [seats.some((s) => s.team === 0), seats.some((s) => s.team === 1)];
       this.match = new Match({
         leftClub: left,
         rightClub: right,
-        humans: [this.humans[0], this.humans[1]],
+        humans: this.humans,
         halfMinutes,
         difficulty,
+        seats,
+        rules: this.rulesMode !== "free",
       });
     }
     ui.innerHTML = hudHtml(this.clubs[0], this.clubs[1]);
@@ -783,13 +936,26 @@ class App {
     audio.startCrowd();
   }
 
+  private localSeats(): SeatSetup[] {
+    const seats: SeatSetup[] = [];
+    if (this.devices[0]) seats.push({ slot: 0, team: 0, name: "Gracz 1", color: PLAYER_COLORS[0] });
+    if (this.devices[1]) seats.push({ slot: 1, team: 1, name: "Gracz 2", color: PLAYER_COLORS[1] });
+    return seats;
+  }
+
+  private onlineSeats(): SeatSetup[] {
+    return (this.lobby?.players ?? [])
+      .filter((p) => p.side)
+      .map((p) => ({ slot: p.slot, team: (p.side === "right" ? 1 : 0) as 0 | 1, name: p.name, color: p.color }));
+  }
+
   private hintText(): string {
     const usesPad = this.online ? listPads().length > 0 && this.activePad !== null : this.devices.some((d) => d?.startsWith("pad:"));
     const usesKeys = this.online ? true : this.devices.includes("keyboard") || this.devices.includes("keys2");
     const split = !this.online && this.devices.includes("keyboard") && this.devices.includes("keys2");
-    const keys = "WASD ruch · Shift sprint · X podanie · C strzał · Spacja prostopadła · F górą · E wślizg · Q zmiana · Ctrl krycie · Esc pauza";
-    const arrows = "Strzałki ruch · ; sprint · K podanie · L strzał · I prostopadła · J górą · O wślizg · U zmiana · M krycie";
-    const pad = "Pad: A podanie · B strzał · Y prostopadła · X górą / wślizg · LB zmiana · RT sprint · LT krycie · Start pauza";
+    const keys = "WASD ruch · Shift sprint · X podanie · C strzał · Spacja prostopadła · F górą · E wślizg · R piłka w rękach · Q zmiana · Ctrl krycie · Esc pauza";
+    const arrows = "Strzałki ruch · ; sprint · K podanie · L strzał · I prostopadła · J górą · O wślizg · P piłka w rękach · U zmiana · M krycie";
+    const pad = "Pad: A podanie · B strzał · Y prostopadła · X górą / wślizg · R3 piłka w rękach · LB zmiana · RT sprint · LT krycie · Start pauza";
     return [usesKeys ? keys : "", split ? arrows : "", usesPad ? pad : ""].filter(Boolean).join("\n");
   }
 
@@ -802,7 +968,8 @@ class App {
     if (!v || !mouseAiming() || this.world.replaying()) return null;
     const m = mousePosition();
     const g = this.world.pickGround(m.x, m.y, canvas.getBoundingClientRect());
-    const p = v.players[v.control[team]];
+    const id = v.seats.find((s) => s.slot === (this.online ? this.mySlot : team))?.player ?? v.control[team];
+    const p = v.players[id];
     if (!g || !p) return null;
     const dx = g[0] - p.x;
     const dz = g[1] - p.z;
@@ -838,16 +1005,16 @@ class App {
       if (this.sendAcc >= 1 / 60) {
         this.sendAcc = 0;
         this.seq += 1;
-        this.net?.send({ t: "input", seq: this.seq, f: this.overlay === "pause" ? { ...EMPTY_INPUT } : this.readMine() });
+        this.net?.send({ t: "input", seq: this.seq, slot: this.mySlot, f: this.overlay === "pause" ? { ...EMPTY_INPUT } : this.readMine() });
       }
       v = this.guest?.sample() ?? null;
     } else if (this.match) {
-      const inputs: [InputFrame | null, InputFrame | null] = [null, null];
+      const inputs: Array<InputFrame | null> = Array.from({ length: 8 }, () => null);
       const blocked = this.overlay === "pause" || this.modal !== "none";
       if (this.online) {
-        const team = this.myTeam();
-        inputs[team] = blocked ? { ...EMPTY_INPUT } : this.readMine();
-        inputs[1 - team] = this.match.humans[1 - team] ? this.remoteFrame() : null;
+        for (const seat of this.match.seats) {
+          inputs[seat.slot] = seat.slot === this.mySlot ? (blocked ? { ...EMPTY_INPUT } : this.readMine()) : this.remoteFrame(seat.slot);
+        }
       } else {
         inputs[0] = blocked && this.devices[0] ? { ...EMPTY_INPUT } : this.readDevice(this.devices[0], 0);
         inputs[1] = blocked && this.devices[1] ? { ...EMPTY_INPUT } : this.readDevice(this.devices[1], 1);
@@ -877,12 +1044,11 @@ class App {
     this.world.record(v, dt);
     const shown = this.world.update(dt, "match", v, humans) ?? v;
     this.world.render();
-    const tags = ([0, 1] as const).map((t) => {
-      const id = shown.control[t];
-      const p = shown.players[id];
-      const info = ROSTERS[this.clubs[t].id][id % 11];
+    const tags = shown.seats.map((s) => {
+      const p = shown.players[s.player];
+      const info = ROSTERS[this.clubs[s.team].id][s.player % 11];
       const pr = p ? this.world.project(p.x, 2.95, p.z) : { x: 0, y: 0, ok: false };
-      return { x: pr.x, y: pr.y, on: pr.ok, name: info ? `${info.num} ${shortName(info)}` : "", charge: v!.charge[t], kind: v!.chargeKind[t], show: humans[t] };
+      return { x: pr.x, y: pr.y, on: pr.ok, name: info ? `${info.num} ${shortName(info)}` : "", charge: s.charge, kind: s.chargeKind, show: true };
     });
     this.hud?.update(v, dt, this.world.replaying(), tags);
     this.updateCrowdAudio(v, dt);
@@ -990,13 +1156,15 @@ class App {
     else if (this.screen === "gate") ui.innerHTML = gateHtml(this.note, this.connecting !== null);
     else if (this.screen === "sides") ui.innerHTML = this.sidesMarkup();
     else if (this.screen === "clubs") ui.innerHTML = this.clubsMarkup();
+    this.maybeShowUpdate();
   }
 
   private sidesMarkup(): string {
     this.refreshDevices();
     const chips: Chip[] = this.localDevices().map((d) => ({ id: d.id, label: d.label, side: this.sides.get(d.id) ?? null }));
     const assigned = chips.some((c) => c.side);
-    const onlineReady = Boolean(this.lobby?.host.side && this.lobby.guest?.side && this.lobby.host.side !== this.lobby.guest.side);
+    const people = this.lobby?.players ?? [];
+    const onlineReady = people.length >= 2 && people.every((p) => p.side) && people.some((p) => p.side === "left") && people.some((p) => p.side === "right");
     return sidesHtml({
       online: this.online,
       lobby: this.lobby,
@@ -1004,6 +1172,7 @@ class App {
       note: this.note,
       canAdvance: this.online ? onlineReady && this.role === "host" : assigned,
       host: this.role === "host",
+      you: this.mySlot,
     });
   }
 
@@ -1011,8 +1180,8 @@ class App {
     const left = clubById(this.currentClub("left"));
     const right = clubById(this.currentClub("right"));
     const bot = this.botSide();
-    const leftHuman = this.online ? Boolean(this.lobby?.host.side === "left" || this.lobby?.guest?.side === "left") : this.humans[0];
-    const rightHuman = this.online ? Boolean(this.lobby?.host.side === "right" || this.lobby?.guest?.side === "right") : this.humans[1];
+    const leftHuman = this.online ? Boolean(this.lobby?.players.some((p) => p.side === "left")) : this.humans[0];
+    const rightHuman = this.online ? Boolean(this.lobby?.players.some((p) => p.side === "right")) : this.humans[1];
     return clubsHtml({
       left,
       right,
@@ -1028,6 +1197,8 @@ class App {
       allowLeft: this.online ? this.yourSide === "left" : true,
       allowRight: this.online ? this.yourSide === "right" : true,
       settings: this.settings,
+      rules: this.rulesMode,
+      rulesHost: !this.online || this.role === "host",
     });
   }
 }

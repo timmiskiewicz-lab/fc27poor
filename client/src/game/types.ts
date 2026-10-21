@@ -18,7 +18,15 @@ export const EMPTY_INPUT: InputFrame = {
   switchP: false,
   jockey: false,
   skip: false,
+  hands: false,
 };
+
+export interface SeatSetup {
+  slot: number;
+  team: 0 | 1;
+  name: string;
+  color: string;
+}
 
 export interface MatchConfig {
   leftClub: ClubId;
@@ -27,6 +35,10 @@ export interface MatchConfig {
   halfMinutes: number;
   difficulty: number;
   seed?: number;
+  /** When omitted, one seat is created for each human side. */
+  seats?: SeatSetup[];
+  /** False turns off fouls, cards and offsides. */
+  rules?: boolean;
 }
 
 export interface LocalSideSetup {

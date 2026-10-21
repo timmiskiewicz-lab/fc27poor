@@ -1163,7 +1163,7 @@ export class TeamAI {
       const high = m.rng.chance(0.35);
       const plan: KickPlan = { kind: "shot", power: m.rng.range(0.55, 0.78), tx: gx + Math.sign(gx) * 0.4, tz: side * m.rng.range(1.9, 3.0), ty: high ? m.rng.range(1.3, 2.0) : m.rng.range(0.2, 0.6), receiver: -1, curl: 0, ai: true };
       const gk = m.keeper(1 - this.team);
-      if (gk.on && m.rng.chance(0.85)) {
+      if (gk.on && !m.isHuman(gk) && m.rng.chance(0.85)) {
         const guess = m.rng.chance(0.5 + (gk.info.stats.gk - 80) * 0.01) ? Math.sign(plan.tz) : -Math.sign(plan.tz);
         gk.state = "dive";
         gk.st = -0.05;

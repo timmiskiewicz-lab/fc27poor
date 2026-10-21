@@ -29,5 +29,11 @@ export function lerpView(a: MatchView, b: MatchView, t: number): MatchView {
     refs: a.refs.map((p, i) => lerpPlayer(p, b.refs[i] ?? p, k)),
     clock: lerp(a.clock, b.clock, k),
     charge: [lerp(a.charge[0], b.charge[0], k), lerp(a.charge[1], b.charge[1], k)],
+    seats: near.seats.map((s) => {
+      const from = a.seats.find((q) => q.slot === s.slot);
+      const to = b.seats.find((q) => q.slot === s.slot);
+      if (!from || !to || from.player !== to.player) return s;
+      return { ...s, cd: lerp(from.cd, to.cd, k), hold: lerp(from.hold, to.hold, k), charge: lerp(from.charge, to.charge, k) };
+    }),
   };
 }

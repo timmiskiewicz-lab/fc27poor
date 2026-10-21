@@ -1,5 +1,5 @@
 import { pickKits, type Club } from "../../shared/clubs";
-import type { LobbyState, SideName } from "../../shared/protocol";
+import type { LobbyState, RulesMode, SideName } from "../../shared/protocol";
 import { ROSTERS, SLOT_POS, shortName, teamRatings } from "../../shared/rosters";
 import type { MatchEvent, MatchView } from "../../shared/state";
 import { HALF_L, HALF_W } from "./game/math";
@@ -14,6 +14,22 @@ export interface Chip {
 
 export function esc(value: string): string {
   return value.replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch] ?? ch);
+}
+
+export function updateHtml(current: string, next: string, notes: string, busy: string, error: string): string {
+  const status = busy || error;
+  return `<section class="menu-card">
+    <p class="eyebrow">Aktualizacja</p>
+    <h2>Nowa wersja</h2>
+    <p class="lead">Masz ${esc(current)}, a dostępna jest ${esc(next)}. Zainstalować ją teraz? Gra się zamknie i uruchomi instalator.</p>
+    ${notes ? `<p class="help">${esc(notes)}</p>` : ""}
+    ${status ? `<p id="update-status" class="${error ? "note" : "help"}">${esc(status)}</p><div class="update-bar"><em id="update-bar-fill"></em></div>` : `<p id="update-status" class="help" hidden></p>`}
+    ${busy ? "" : `<div class="stack">
+      <button data-act="update-yes">Zaktualizuj</button>
+      ${error ? `<button data-act="update-open" class="ghost">Otwórz stronę wydania</button>` : ""}
+      <button data-act="update-no" class="ghost">Nie teraz</button>
+    </div>`}
+  </section>`;
 }
 
 export function toast(message: string): void {
@@ -65,14 +81,15 @@ export function gateHtml(note: string, busy: boolean): string {
   return `<div class="menu-wrap"><section class="menu-card">
     <p class="eyebrow">Online</p>
     <h1>Pokój</h1>
-    <p class="lead">Bez kont i bez serwera. Kto stworzy pokój, ten jest hostem: mecz liczy jego komputer, a on dostaje kod z 6 cyfr. Druga osoba wpisuje ten kod.</p>
+    <p class="lead">Bez kont i bez serwera. Kto stworzy pokój, ten jest hostem: mecz liczy jego komputer, a on dostaje kod z 6 cyfr. Do jednego meczu może wejść do 8 osób.</p>
+    <label>Twoja nazwa<input id="nick" name="name" maxlength="16" autocomplete="nickname" placeholder="np. Tymek" required ${off} /></label>
     <div class="stack"><button data-act="host" ${off}>Stwórz pokój</button></div>
     <form data-form="join">
       <label>Kod pokoju<input name="code" inputmode="numeric" autocomplete="off" maxlength="6" pattern="[0-9]{6}" placeholder="000000" required ${off} /></label>
       <button type="submit" ${off}>Dołącz</button>
     </form>
     ${note ? `<p class="note">${esc(note)}</p>` : ""}
-    <p class="help">Internet jest potrzebny tylko do znalezienia się po kodzie. Potem komputery łączą się bezpośrednio.</p>
+    <p class="help">Przy dołączaniu dostajesz swój kolor. Tryb meczu (z zasadami albo bez) ustawia host w pokoju.</p>
     <div class="stack"><button data-act="back" class="ghost" type="button">Wróć</button></div>
   </section></div>`;
 }
@@ -81,20 +98,34 @@ function chipHtml(chip: Chip): string {
   return `<span class="chip">${esc(chip.label)}</span>`;
 }
 
-function onlineChips(lobby: LobbyState | null, side: SideName | null, host: boolean): string {
+function personChip(name: string, color: string, you: boolean): string {
+  return `<span class="chip"><i class="dot" style="background:${esc(color)}"></i>${esc(you ? `Ty · ${name}` : name)}</span>`;
+}
+
+function onlineChips(lobby: LobbyState | null, side: SideName | null, you: number): string {
   if (!lobby) return "";
-  return [lobby.host, lobby.guest]
-    .filter((person) => person && person.side === side)
-    .map((person) => `<span class="chip">${esc((person === lobby.host) === host ? `Ty · ${person!.name}` : person!.name)}</span>`)
+  return lobby.players
+    .filter((person) => person.side === side)
+    .map((person) => personChip(person.name, person.color, person.slot === you))
     .join("");
 }
 
-export function sidesHtml(opts: { online: boolean; lobby: LobbyState | null; chips: Chip[]; note: string; canAdvance: boolean; host: boolean }): string {
-  const leftChips = opts.online ? onlineChips(opts.lobby, "left", opts.host) : opts.chips.filter((c) => c.side === "left").map(chipHtml).join("");
-  const rightChips = opts.online ? onlineChips(opts.lobby, "right", opts.host) : opts.chips.filter((c) => c.side === "right").map(chipHtml).join("");
-  const midChips = opts.online ? onlineChips(opts.lobby, null, opts.host) : opts.chips.filter((c) => c.side === null).map(chipHtml).join("");
+function rulesToggle(rules: RulesMode, host: boolean): string {
+  const lock = host ? "" : "disabled";
+  return `<div class="modes">
+    <button data-act="rules" data-arg="full" class="${rules === "full" ? "on" : ""}" ${lock}>Zasady</button>
+    <button data-act="rules" data-arg="free" class="${rules === "free" ? "on" : ""}" ${lock}>Bez zasad</button>
+  </div>
+  <p class="help">${rules === "free" ? "Bez fauli, kartek i spalonych. Auty, rożne i gole zostają." : "Pełne zasady: faule, kartki, spalone, karne."}</p>`;
+}
+
+export function sidesHtml(opts: { online: boolean; lobby: LobbyState | null; chips: Chip[]; note: string; canAdvance: boolean; host: boolean; you?: number }): string {
+  const you = opts.you ?? 0;
+  const leftChips = opts.online ? onlineChips(opts.lobby, "left", you) : opts.chips.filter((c) => c.side === "left").map(chipHtml).join("");
+  const rightChips = opts.online ? onlineChips(opts.lobby, "right", you) : opts.chips.filter((c) => c.side === "right").map(chipHtml).join("");
+  const midChips = opts.online ? onlineChips(opts.lobby, null, you) : opts.chips.filter((c) => c.side === null).map(chipHtml).join("");
   const code = opts.lobby?.code ?? "";
-  const waiting = opts.online && opts.host && !opts.lobby?.guest;
+  const waiting = opts.online && (opts.lobby?.players.length ?? 0) < 2;
   return `<div class="sides">
     <div class="half left" data-act="assign" data-arg="left">
       <div><p class="kicker">Gospodarze</p><strong>LEWA</strong></div>
@@ -103,8 +134,8 @@ export function sidesHtml(opts: { online: boolean; lobby: LobbyState | null; chi
     <div class="center-col">
       ${
         opts.online && code
-          ? `<p class="kicker">Kod pokoju</p><div class="code">${esc(code)}</div><p class="help">${
-              waiting ? "Podaj ten kod koledze. Czekam, aż dołączy…" : "Kolega jest w pokoju. A / D albo lewy drążek wybiera stronę."
+          ? `<p class="kicker">Kod pokoju</p><div class="code">${esc(code)}</div>${rulesToggle(opts.lobby?.rules ?? "full", opts.host)}<p class="help">${
+              waiting ? "Podaj ten kod kolegom (do 8 osób). Kolorowa kropka to kolor gracza." : "A / D albo lewy drążek wybiera stronę. Na jednej stronie może stanąć kilka osób."
             }</p>`
           : `<p class="kicker">Urządzenia</p><p class="help">A / D przesuwa klawiaturę WASD, strzałki ← → przesuwają klawiaturę strzałek, drążek swój pad. W dół wraca na środek. Pusta strona to bot. Dwie osoby mogą grać na jednej klawiaturze.</p>`
       }
@@ -138,6 +169,8 @@ export function clubsHtml(opts: {
   rightLabel: string;
   canStart: boolean;
   help: string;
+  rules?: RulesMode;
+  rulesHost?: boolean;
   allowLeft: boolean;
   allowRight: boolean;
   settings: Settings;
@@ -165,6 +198,7 @@ export function clubsHtml(opts: {
       <div class="quick">
         <span>${s.halfMinutes} min połowa</span><span>${esc(DIFFICULTY[s.difficulty])}</span>
       </div>
+      ${opts.rules ? rulesToggle(opts.rules, opts.rulesHost !== false) : ""}
       ${opts.canStart ? `<button data-act="start">Graj</button>` : `<p class="help">Czekam na hosta.</p>`}
       <button data-act="settings" class="ghost">Ustawienia</button>
       <button data-act="back" class="ghost">Wróć</button>
@@ -217,6 +251,8 @@ export function controlsHtml(): string {
     ["Pressing przy rywalu", "przytrzymaj X (bez piłki)", "przytrzymaj K (bez piłki)", "przytrzymaj A (bez piłki)"],
     ["Krycie bokiem (jockey)", "lewy Ctrl", "M / prawy Ctrl", "LT"],
     ["Zmiana zawodnika", "Q", "U", "LB"],
+    ["Piłka w rękach (co 40 s, na 5 s)", "R", "P", "R3"],
+    ["Obrona karnego", "ruch w górę i w dół, potem strzał albo wślizg", "to samo", "ruch + B albo X"],
     ["Celowanie", "mysz na boisku albo kierunek ruchu", "kierunek ruchu", "lewy lub prawy drążek"],
     ["Pomiń powtórkę", "Enter", "Enter", "A"],
     ["Pauza", "Esc", "Esc", "Start"],
@@ -302,6 +338,8 @@ export function hudHtml(left: Club, right: Club): string {
     <div id="tag0" class="ptag hidden"><span class="nm"></span><i class="pw"><em></em></i></div>
     <div id="tag1" class="ptag p2 hidden"><span class="nm"></span><i class="pw"><em></em></i></div>
     <div id="hint" class="hint"></div>
+    <div id="hands" class="hands"></div>
+    <div id="rules-tag" class="rules-tag hidden">Bez zasad</div>
   </div><div id="overlay"></div>`;
 }
 
@@ -390,8 +428,26 @@ export class Hud {
       if (this.hintTimer <= 0) document.getElementById("hint")?.classList.add("gone");
     }
     document.getElementById("replay")?.classList.toggle("hidden", !replay);
+    document.getElementById("rules-tag")?.classList.toggle("hidden", v.rules);
+    const hands = document.getElementById("hands");
+    if (hands) {
+      hands.innerHTML = v.seats
+        .map((s) => {
+          const n = s.hold > 0 ? Math.ceil(s.hold) : s.cd > 0 ? Math.ceil(s.cd) : 0;
+          return `<i class="${s.hold > 0 ? "hold" : ""}" style="background:${esc(s.color)}" title="${esc(s.name)}">${n}</i>`;
+        })
+        .join("");
+    }
+    const hud = document.querySelector(".hud");
     tags.forEach((tag, i) => {
-      const el = document.getElementById(`tag${i}`);
+      let el = document.getElementById(`tag${i}`);
+      if (!el && hud) {
+        el = document.createElement("div");
+        el.id = `tag${i}`;
+        el.className = "ptag hidden";
+        el.innerHTML = `<span class="nm"></span><i class="pw"><em></em></i>`;
+        hud.append(el);
+      }
       if (!el) return;
       const show = tag.show && tag.on && !replay;
       el.classList.toggle("hidden", !show);
@@ -407,6 +463,7 @@ export class Hud {
         fill.dataset.kind = String(tag.kind);
       }
     });
+    for (let i = tags.length; i < 8; i += 1) document.getElementById(`tag${i}`)?.classList.add("hidden");
     this.radar(v, replay);
   }
 
@@ -438,8 +495,9 @@ export class Hud {
     v.players.forEach((p, i) => {
       if (!p.on) return;
       const t = i < 11 ? 0 : 1;
-      const ctrl = v.control[t] === i;
-      g.fillStyle = this.colors[t];
+      const seat = v.seats.find((s) => s.player === i);
+      const ctrl = Boolean(seat);
+      g.fillStyle = seat?.color ?? this.colors[t];
       g.strokeStyle = ctrl ? "#ffffff" : "rgba(0,0,0,0.6)";
       g.lineWidth = ctrl ? 2 : 1;
       g.beginPath();

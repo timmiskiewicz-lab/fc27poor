@@ -36,6 +36,7 @@ interface KeySet {
   slide: string[];
   switchP: string[];
   jockey: string[];
+  hands: string[];
 }
 
 const KEYSETS: Record<"wasd" | "arrows", KeySet> = {
@@ -52,6 +53,7 @@ const KEYSETS: Record<"wasd" | "arrows", KeySet> = {
     slide: ["KeyE"],
     switchP: ["KeyQ"],
     jockey: ["ControlLeft"],
+    hands: ["KeyR"],
   },
   arrows: {
     up: ["ArrowUp"],
@@ -66,6 +68,7 @@ const KEYSETS: Record<"wasd" | "arrows", KeySet> = {
     slide: ["KeyO"],
     switchP: ["KeyU"],
     jockey: ["KeyM", "ControlRight"],
+    hands: ["KeyP"],
   },
 };
 
@@ -79,7 +82,7 @@ function keySet(layout: KeyLayout): KeySet {
 }
 
 const SOLO = keySet("solo");
-const GAME_KEYS = ["Enter", ...SOLO.pass, ...SOLO.shoot, ...SOLO.through, ...SOLO.lob, ...SOLO.slide, ...SOLO.switchP];
+const GAME_KEYS = ["Enter", ...SOLO.pass, ...SOLO.shoot, ...SOLO.through, ...SOLO.lob, ...SOLO.slide, ...SOLO.switchP, ...SOLO.hands];
 
 function typingNow(): boolean {
   const el = document.activeElement;
@@ -314,6 +317,7 @@ export function readKeyboardInput(basis: GroundBasis, aim: [number, number] | nu
     switchP: press(keys.switchP),
     jockey: down(keys.jockey),
     skip: held("Enter"),
+    hands: press(keys.hands),
   };
 }
 
@@ -358,6 +362,7 @@ export function readPadInput(index: number, basis: GroundBasis): InputFrame {
     switchP: Boolean(b[4]),
     jockey: Boolean(b[6]),
     skip: Boolean(b[0] || b[8]),
+    hands: Boolean(b[11]),
   };
 }
 
@@ -383,5 +388,6 @@ export function sanitizeInput(raw: Partial<InputFrame> | undefined): InputFrame 
     switchP: Boolean(r.switchP),
     jockey: Boolean(r.jockey),
     skip: Boolean(r.skip),
+    hands: Boolean(r.hands),
   };
 }
